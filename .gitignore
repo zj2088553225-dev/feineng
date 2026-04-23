@@ -1,0 +1,16 @@
+# IDE
+.idea/
+**/.idea/
+
+# Frontend build and dependencies
+frontend/node_modules/
+frontend/dist/
+
+# Local binaries
+backend/main
+sync_data/main
+
+# Environment and logs
+.env
+.env.*
+*.log
