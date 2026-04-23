@@ -92,7 +92,8 @@ go test ./... -run TestName -count=1   # single test by name
 - Kilimall auth is header+cookie based (not OAuth bearer): set `accesstoken` header plus `Cookie` (especially `seller-sid=...`) from `sync_data/settings.yaml` under `kilimall.auth_token` and `kilimall.cookie`.
 - Required request headers include at least `accept`, `accept-language`, `origin`, `referer`, `kili-language`, `request-nonce`, `user-agent`, and auth headers above; content type is not needed for this GET endpoint.
 - When HTTP 401/403 or auth-related API errors appear, sync marks `service_status(id=13)` as `错误` so dashboard can prompt manual YAML credential refresh.
-- Current persistence maps cleaned Kilimall logistics fields into `models.OrderItem` (upsert by `id`), because this repo currently has no `models.LogisticsRecord` type.
+- Kilimall parser now uses strong typed mapping for `data.orders[]` + `orders[].skus[]`, populating frontend-relevant fields into `models.OrderItem` (`order_number`, `tracking_number`, `status`, `product_name`, `seller_sku`, `image_url`, pricing fields).
+- Kilimall sync also upserts parent rows into `models.Order` (`orders` table), so existing backend `/api/user/order` aggregation logic can attach nested `orderItems` without missing-parent issues.
 
 ## Important project-specific gotchas
 

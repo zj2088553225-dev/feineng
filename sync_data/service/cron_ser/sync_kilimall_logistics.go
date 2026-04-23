@@ -37,13 +37,69 @@ type KilimallLogisticsRecord struct {
 	CountryCode     string
 	CountryName     string
 	CountryCurrency string
+	ProductName     string
+	SellerSKU       string
+	ImageURL        string
+	ItemPrice       float64
+	PaidPrice       float64
+	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
 
-type kilimallEnvelope struct {
-	Code int             `json:"code"`
-	Msg  string          `json:"msg"`
-	Data json.RawMessage `json:"data"`
+type KilimallParentOrder struct {
+	ID                       string
+	ShopIDs                  string
+	Status                   string
+	Number                   string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	TotalAmountLocalCurrency string
+	TotalAmountLocalValue    float64
+	CountryCode              string
+	CountryName              string
+	CountryCurrency          string
+}
+
+type kilimallOrderListResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data struct {
+		Total  int             `json:"total"`
+		Orders []kilimallOrder `json:"orders"`
+	} `json:"data"`
+}
+
+type kilimallOrder struct {
+	OrderID             int64         `json:"orderId"`
+	OrderSn             string        `json:"orderSn"`
+	RegionCode          string        `json:"regionCode"`
+	StoreID             int64         `json:"storeId"`
+	CreatedTime         string        `json:"createdTime"`
+	PaidTime            string        `json:"paidTime"`
+	ConfirmedTime       string        `json:"confirmedTime"`
+	ShippedTime         string        `json:"shippedTime"`
+	DeliveredTime       string        `json:"deliveredTime"`
+	CompletedTime       string        `json:"completedTime"`
+	CancelledTime       string        `json:"cancelledTime"`
+	RejectedTime        string        `json:"rejectedTime"`
+	OrderStatus         int           `json:"orderStatus"`
+	OrderTrackingNumber string        `json:"orderTrackingNumber"`
+	LogisticsNumber     string        `json:"LogisticsNumber"`
+	DeliveryType        interface{}   `json:"deliveryType"`
+	PayAmount           float64       `json:"payAmount"`
+	Skus                []kilimallSKU `json:"skus"`
+}
+
+type kilimallSKU struct {
+	ID         int64   `json:"id"`
+	Title      string  `json:"title"`
+	Spec       string  `json:"spec"`
+	IDByVendor string  `json:"idByVendor"`
+	SkuID      int64   `json:"skuId"`
+	ImgURL     string  `json:"imgUrl"`
+	DealPrice  float64 `json:"dealPrice"`
+	SalePrice  float64 `json:"salePrice"`
+	Amount     float64 `json:"amount"`
 }
 
 func SyncKilimallLogistics() {
@@ -56,7 +112,7 @@ func SyncKilimallLogistics() {
 		return
 	}
 
-	records, err := FetchKilimallLogistics(cookie, authToken)
+	records, parentOrders, err := FetchKilimallLogistics(cookie, authToken)
 	if err != nil {
 		if errors.Is(err, ErrKilimallAuthExpired) {
 			updateKilimallServiceStatus("错误", "Kilimall Cookie/Token 已过期或被拦截，请手动更新 settings.yaml")
@@ -72,6 +128,11 @@ func SyncKilimallLogistics() {
 		return
 	}
 
+	if err := upsertKilimallOrders(parentOrders); err != nil {
+		updateKilimallServiceStatus("错误", fmt.Sprintf("Kilimall 父订单入库失败: %v", err))
+		return
+	}
+
 	if err := upsertKilimallLogistics(cleaned); err != nil {
 		updateKilimallServiceStatus("错误", fmt.Sprintf("Kilimall 入库失败: %v", err))
 		return
@@ -80,7 +141,7 @@ func SyncKilimallLogistics() {
 	updateKilimallServiceStatus("正常", fmt.Sprintf("Kilimall 物流同步成功，记录数: %d", len(cleaned)))
 }
 
-func FetchKilimallLogistics(cookie, authToken string) ([]KilimallLogisticsRecord, error) {
+func FetchKilimallLogistics(cookie, authToken string) ([]KilimallLogisticsRecord, []KilimallParentOrder, error) {
 	baseURL := strings.TrimSpace(global.Config.Kilimall.BaseURL)
 	if baseURL == "" {
 		baseURL = "https://seller-api.kilimall.ke"
@@ -110,23 +171,25 @@ func FetchKilimallLogistics(cookie, authToken string) ([]KilimallLogisticsRecord
 
 	client := &http.Client{Timeout: 40 * time.Second}
 	allRecords := make([]KilimallLogisticsRecord, 0)
+	allParentOrders := make([]KilimallParentOrder, 0)
 
 	for page := 1; ; page++ {
 		time.Sleep(delayWithJitter(delay))
 
 		var (
-			records []KilimallLogisticsRecord
-			hasNext bool
-			err    error
+			records      []KilimallLogisticsRecord
+			parentOrders []KilimallParentOrder
+			hasNext      bool
+			err          error
 		)
 
 		for attempt := 1; attempt <= maxRetries; attempt++ {
-			records, hasNext, err = fetchKilimallPage(client, baseURL, apiPath, page, pageSize, cookie, authToken)
+			records, parentOrders, hasNext, err = fetchKilimallPage(client, baseURL, apiPath, page, pageSize, cookie, authToken)
 			if err == nil {
 				break
 			}
 			if errors.Is(err, ErrKilimallAuthExpired) {
-				return nil, err
+				return nil, nil, err
 			}
 			if attempt < maxRetries {
 				backoff := time.Duration(attempt*attempt) * time.Second
@@ -135,55 +198,135 @@ func FetchKilimallLogistics(cookie, authToken string) ([]KilimallLogisticsRecord
 			}
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		allRecords = append(allRecords, records...)
+		allParentOrders = append(allParentOrders, parentOrders...)
 		if !hasNext || len(records) == 0 {
 			break
 		}
 	}
 
-	return allRecords, nil
+	return allRecords, dedupKilimallParentOrders(allParentOrders), nil
 }
 
-func fetchKilimallPage(client *http.Client, baseURL, apiPath string, page, pageSize int, cookie, authToken string) ([]KilimallLogisticsRecord, bool, error) {
+func fetchKilimallPage(client *http.Client, baseURL, apiPath string, page, pageSize int, cookie, authToken string) ([]KilimallLogisticsRecord, []KilimallParentOrder, bool, error) {
 	u, err := buildKilimallURL(baseURL, apiPath, page, pageSize)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	setKilimallHeaders(req, baseURL, cookie, authToken)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, false, ErrKilimallAuthExpired
+		return nil, nil, false, ErrKilimallAuthExpired
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("kilimall http status=%d body=%.400s", resp.StatusCode, string(body))
+		return nil, nil, false, fmt.Errorf("kilimall http status=%d body=%.400s", resp.StatusCode, string(body))
 	}
 
-	records, totalPage, err := parseKilimallResponse(body)
-	if err != nil {
-		return nil, false, err
+	var result kilimallOrderListResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, nil, false, fmt.Errorf("kilimall json parse failed: %w body=%.400s", err, string(body))
+	}
+	if result.Code != 0 && result.Code != 200 {
+		msg := strings.ToLower(result.Msg)
+		if strings.Contains(msg, "auth") || strings.Contains(msg, "forbidden") || strings.Contains(msg, "unauthorized") {
+			return nil, nil, false, ErrKilimallAuthExpired
+		}
+		return nil, nil, false, fmt.Errorf("kilimall api error code=%d msg=%s", result.Code, result.Msg)
 	}
 
-	hasNext := totalPage == 0 || page < totalPage
-	return records, hasNext, nil
+	records := flattenKilimallOrders(result.Data.Orders)
+	parentOrders := mapKilimallParentOrders(result.Data.Orders)
+	hasNext := page*pageSize < result.Data.Total
+	return records, parentOrders, hasNext, nil
+}
+
+func flattenKilimallOrders(orders []kilimallOrder) []KilimallLogisticsRecord {
+	records := make([]KilimallLogisticsRecord, 0)
+	for _, order := range orders {
+		orderID := strconv.FormatInt(order.OrderID, 10)
+		shopID := strconv.FormatInt(order.StoreID, 10)
+		trackingNumber := firstNonEmpty(strings.TrimSpace(order.OrderTrackingNumber), strings.TrimSpace(order.LogisticsNumber))
+		status := mapKilimallOrderStatus(order)
+		createdAt := parseKilimallTime(order.CreatedTime)
+		updatedAt := pickLatestTime(order)
+		deliveryOption := strings.TrimSpace(fmt.Sprintf("%v", order.DeliveryType))
+
+		if len(order.Skus) == 0 {
+			records = append(records, KilimallLogisticsRecord{
+				ID:             buildKilimallSyntheticID(orderID, order.OrderSn, trackingNumber, ""),
+				OrderID:        orderID,
+				OrderNumber:    strings.TrimSpace(order.OrderSn),
+				TrackingNumber: trackingNumber,
+				Status:         status,
+				DeliveryOption: deliveryOption,
+				ShopID:         shopID,
+				CountryCode:    strings.TrimSpace(order.RegionCode),
+				CountryName:    mapRegionToCountry(order.RegionCode),
+				PaidPrice:      order.PayAmount,
+				CreatedAt:      createdAt,
+				UpdatedAt:      updatedAt,
+			})
+			continue
+		}
+
+		for _, sku := range order.Skus {
+			sellerSKU := strings.TrimSpace(sku.IDByVendor)
+			if sellerSKU == "" && sku.SkuID > 0 {
+				sellerSKU = strconv.FormatInt(sku.SkuID, 10)
+			}
+			price := sku.Amount
+			if price <= 0 {
+				if sku.SalePrice > 0 {
+					price = sku.SalePrice
+				} else {
+					price = sku.DealPrice
+				}
+			}
+			productName := strings.TrimSpace(sku.Title)
+			if strings.TrimSpace(sku.Spec) != "" {
+				productName = strings.TrimSpace(productName + " " + sku.Spec)
+			}
+			records = append(records, KilimallLogisticsRecord{
+				ID:              buildKilimallSyntheticID(orderID, order.OrderSn, trackingNumber, strconv.FormatInt(sku.ID, 10)),
+				OrderID:         orderID,
+				OrderNumber:     strings.TrimSpace(order.OrderSn),
+				TrackingNumber:  trackingNumber,
+				Status:          status,
+				DeliveryOption:  deliveryOption,
+				ShopID:          shopID,
+				CountryCode:     strings.TrimSpace(order.RegionCode),
+				CountryName:     mapRegionToCountry(order.RegionCode),
+				ProductName:     productName,
+				SellerSKU:       sellerSKU,
+				ImageURL:        strings.TrimSpace(sku.ImgURL),
+				ItemPrice:       price,
+				PaidPrice:       price,
+				CreatedAt:       createdAt,
+				UpdatedAt:       updatedAt,
+				CountryCurrency: mapRegionToCurrency(order.RegionCode),
+			})
+		}
+	}
+	return records
 }
 
 func buildKilimallURL(baseURL, apiPath string, page, pageSize int) (*url.URL, error) {
@@ -252,117 +395,6 @@ func setKilimallHeaders(req *http.Request, baseURL, cookie, authToken string) {
 	}
 }
 
-func parseKilimallResponse(body []byte) ([]KilimallLogisticsRecord, int, error) {
-	var envelope kilimallEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, 0, fmt.Errorf("kilimall json parse failed: %w, body=%.400s", err, string(body))
-	}
-
-	if envelope.Code == http.StatusUnauthorized || envelope.Code == http.StatusForbidden {
-		return nil, 0, ErrKilimallAuthExpired
-	}
-	if envelope.Code != 0 && envelope.Code != 200 {
-		msgLower := strings.ToLower(envelope.Msg)
-		if strings.Contains(msgLower, "auth") || strings.Contains(msgLower, "forbidden") || strings.Contains(msgLower, "unauthorized") {
-			return nil, 0, ErrKilimallAuthExpired
-		}
-		return nil, 0, fmt.Errorf("kilimall api error code=%d msg=%s", envelope.Code, envelope.Msg)
-	}
-
-	return extractKilimallRecords(envelope.Data)
-}
-
-func extractKilimallRecords(raw json.RawMessage) ([]KilimallLogisticsRecord, int, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, 0, nil
-	}
-
-	var dataMap map[string]interface{}
-	if err := json.Unmarshal(raw, &dataMap); err != nil {
-		var arr []map[string]interface{}
-		if errArr := json.Unmarshal(raw, &arr); errArr == nil {
-			records := make([]KilimallLogisticsRecord, 0, len(arr))
-			for _, row := range arr {
-				records = append(records, mapKilimallGenericRecord(row))
-			}
-			return records, 0, nil
-		}
-		return nil, 0, fmt.Errorf("kilimall data parse failed: %w", err)
-	}
-
-	recordRows := extractRecordRows(dataMap)
-	totalPage := intFromMap(dataMap, "totalPage", "pages", "pageCount", "totalPages")
-
-	records := make([]KilimallLogisticsRecord, 0, len(recordRows))
-	for _, row := range recordRows {
-		records = append(records, mapKilimallGenericRecord(row))
-	}
-	return records, totalPage, nil
-}
-
-func extractRecordRows(data map[string]interface{}) []map[string]interface{} {
-	keys := []string{"records", "list", "rows", "items", "orderList", "orders", "result"}
-	for _, key := range keys {
-		if value, ok := data[key]; ok {
-			if rows := normalizeRows(value); len(rows) > 0 {
-				return rows
-			}
-		}
-	}
-
-	if nested, ok := data["data"].(map[string]interface{}); ok {
-		return extractRecordRows(nested)
-	}
-	return nil
-}
-
-func normalizeRows(v interface{}) []map[string]interface{} {
-	rawList, ok := v.([]interface{})
-	if !ok {
-		return nil
-	}
-	rows := make([]map[string]interface{}, 0, len(rawList))
-	for _, item := range rawList {
-		row, ok := item.(map[string]interface{})
-		if ok {
-			rows = append(rows, row)
-		}
-	}
-	return rows
-}
-
-func mapKilimallGenericRecord(row map[string]interface{}) KilimallLogisticsRecord {
-	orderID := stringFromMap(row, "orderId", "order_id", "orderID")
-	orderNumber := stringFromMap(row, "orderNumber", "order_number", "orderNo", "order_no")
-	trackingNumber := stringFromMap(row, "trackingNumber", "tracking_number", "trackingNo", "shippingNo", "shippingNumber", "logisticsNo")
-	trackingURL := stringFromMap(row, "trackingUrl", "tracking_url", "trackUrl", "logisticsUrl")
-	shopID := stringFromMap(row, "shopId", "shop_id", "storeId", "store_id")
-	status := stringFromMap(row, "status", "orderStatus", "shippingStatus")
-
-	id := stringFromMap(row, "id", "itemId", "orderItemId")
-	if id == "" {
-		id = buildKilimallSyntheticID(orderID, orderNumber, trackingNumber)
-	}
-
-	updatedAt := parseKilimallTimeValue(valueFromMap(row, "updatedAt", "updated_at", "updateTime", "update_time"))
-
-	return KilimallLogisticsRecord{
-		ID:              id,
-		OrderID:         orderID,
-		OrderNumber:     orderNumber,
-		TrackingNumber:  trackingNumber,
-		TrackingURL:     trackingURL,
-		Status:          status,
-		ShipmentType:    stringFromMap(row, "shipmentType", "shipment_type"),
-		DeliveryOption:  stringFromMap(row, "deliveryOption", "delivery_option"),
-		ShopID:          shopID,
-		CountryCode:     stringFromMap(row, "countryCode", "country_code"),
-		CountryName:     stringFromMap(row, "countryName", "country_name"),
-		CountryCurrency: stringFromMap(row, "currency", "countryCurrency", "country_currency"),
-		UpdatedAt:       updatedAt,
-	}
-}
-
 func upsertKilimallLogistics(records []KilimallLogisticsRecord) error {
 	items := make([]models.OrderItem, 0, len(records))
 	for _, rec := range records {
@@ -382,6 +414,12 @@ func upsertKilimallLogistics(records []KilimallLogisticsRecord) error {
 			CountryCode:     rec.CountryCode,
 			CountryName:     rec.CountryName,
 			CountryCurrency: rec.CountryCurrency,
+			ProductName:     rec.ProductName,
+			SellerSKU:       rec.SellerSKU,
+			ImageURL:        rec.ImageURL,
+			ItemPrice:       rec.ItemPrice,
+			PaidPrice:       rec.PaidPrice,
+			CreatedAt:       rec.CreatedAt,
 			UpdatedAt:       rec.UpdatedAt,
 		})
 	}
@@ -403,7 +441,8 @@ func upsertKilimallLogistics(records []KilimallLogisticsRecord) error {
 			DoUpdates: clause.AssignmentColumns([]string{
 				"order_id", "order_number", "tracking_number", "tracking_url", "status",
 				"shipment_type", "delivery_option", "shop_id", "country_code", "country_name",
-				"country_currency", "updated_at",
+				"country_currency", "product_name", "seller_sku", "image_url",
+				"item_price", "paid_price", "created_at", "updated_at",
 			}),
 		}).Create(&batch).Error; err != nil {
 			return err
@@ -411,6 +450,96 @@ func upsertKilimallLogistics(records []KilimallLogisticsRecord) error {
 	}
 
 	return nil
+}
+
+func upsertKilimallOrders(parentOrders []KilimallParentOrder) error {
+	if len(parentOrders) == 0 {
+		return nil
+	}
+
+	orders := make([]models.Order, 0, len(parentOrders))
+	for _, o := range parentOrders {
+		if o.ID == "" {
+			continue
+		}
+		orders = append(orders, models.Order{
+			ID:                       o.ID,
+			ShopIDs:                  o.ShopIDs,
+			Status:                   o.Status,
+			Number:                   o.Number,
+			CreatedAt:                o.CreatedAt,
+			UpdatedAt:                o.UpdatedAt,
+			TotalAmountLocalCurrency: o.TotalAmountLocalCurrency,
+			TotalAmountLocalValue:    o.TotalAmountLocalValue,
+			CountryCode:              o.CountryCode,
+			CountryName:              o.CountryName,
+			CountryCurrency:          o.CountryCurrency,
+		})
+	}
+
+	const batchSize = 300
+	for i := 0; i < len(orders); i += batchSize {
+		end := i + batchSize
+		if end > len(orders) {
+			end = len(orders)
+		}
+		batch := orders[i:end]
+
+		if err := global.DB.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"shop_ids", "status", "number", "created_at", "updated_at",
+				"total_amount_local_currency", "total_amount_local_value",
+				"country_code", "country_name", "country_currency",
+			}),
+		}).Create(&batch).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func mapKilimallParentOrders(orders []kilimallOrder) []KilimallParentOrder {
+	mapped := make([]KilimallParentOrder, 0, len(orders))
+	for _, order := range orders {
+		orderID := strconv.FormatInt(order.OrderID, 10)
+		if orderID == "0" || orderID == "" {
+			continue
+		}
+		countryCode := strings.TrimSpace(order.RegionCode)
+		mapped = append(mapped, KilimallParentOrder{
+			ID:                       orderID,
+			ShopIDs:                  strconv.FormatInt(order.StoreID, 10),
+			Status:                   mapKilimallOrderStatus(order),
+			Number:                   strings.TrimSpace(order.OrderSn),
+			CreatedAt:                firstNonZeroTime(parseKilimallTime(order.CreatedTime), time.Now()),
+			UpdatedAt:                firstNonZeroTime(pickLatestTime(order), time.Now()),
+			TotalAmountLocalCurrency: mapRegionToCurrency(countryCode),
+			TotalAmountLocalValue:    order.PayAmount,
+			CountryCode:              countryCode,
+			CountryName:              mapRegionToCountry(countryCode),
+			CountryCurrency:          mapRegionToCurrency(countryCode),
+		})
+	}
+	return mapped
+}
+
+func dedupKilimallParentOrders(orders []KilimallParentOrder) []KilimallParentOrder {
+	m := make(map[string]KilimallParentOrder, len(orders))
+	for _, o := range orders {
+		if o.ID == "" {
+			continue
+		}
+		existing, ok := m[o.ID]
+		if !ok || o.UpdatedAt.After(existing.UpdatedAt) {
+			m[o.ID] = o
+		}
+	}
+	result := make([]KilimallParentOrder, 0, len(m))
+	for _, o := range m {
+		result = append(result, o)
+	}
+	return result
 }
 
 func cleanKilimallRecords(records []KilimallLogisticsRecord) []KilimallLogisticsRecord {
@@ -436,23 +565,48 @@ func cleanKilimallRecords(records []KilimallLogisticsRecord) []KilimallLogistics
 	return cleaned
 }
 
-func normalizeKilimallStatus(status string) string {
-	s := strings.ToLower(strings.TrimSpace(status))
-	switch s {
-	case "0", "pending", "wait_ship", "to_ship", "待发货":
-		return "pending"
-	case "1", "shipped", "in_transit", "运输中", "已发货":
-		return "shipped"
-	case "2", "delivered", "已签收", "completed":
-		return "delivered"
-	case "3", "cancelled", "canceled", "已取消":
-		return "cancelled"
-	default:
-		if s == "" {
-			return "unknown"
-		}
-		return s
+func mapKilimallOrderStatus(order kilimallOrder) string {
+	if strings.TrimSpace(order.CancelledTime) != "" || strings.TrimSpace(order.RejectedTime) != "" {
+		return "CANCELLED"
 	}
+	if strings.TrimSpace(order.DeliveredTime) != "" || strings.TrimSpace(order.CompletedTime) != "" {
+		return "DELIVERED"
+	}
+	if strings.TrimSpace(order.ShippedTime) != "" || strings.TrimSpace(order.OrderTrackingNumber) != "" || strings.TrimSpace(order.LogisticsNumber) != "" {
+		return "SHIPPED"
+	}
+	if strings.TrimSpace(order.PaidTime) != "" || strings.TrimSpace(order.ConfirmedTime) != "" {
+		return "PROCESSING"
+	}
+
+	switch order.OrderStatus {
+	case 0:
+		return "PENDING"
+	case 1:
+		return "PENDING"
+	case 2:
+		return "PROCESSING"
+	case 3:
+		return "PROCESSING"
+	case 4:
+		return "SHIPPED"
+	case 5:
+		return "DELIVERED"
+	case 6:
+		return "DELIVERED"
+	case 7:
+		return "CANCELLED"
+	default:
+		return "PENDING"
+	}
+}
+
+func normalizeKilimallStatus(status string) string {
+	s := strings.ToUpper(strings.TrimSpace(status))
+	if s == "" {
+		return "PENDING"
+	}
+	return s
 }
 
 func updateKilimallServiceStatus(status, message string) {
@@ -497,115 +651,107 @@ func delayWithJitter(base time.Duration) time.Duration {
 	return base + jitter
 }
 
-func buildKilimallSyntheticID(orderID, orderNumber, trackingNumber string) string {
+func buildKilimallSyntheticID(orderID, orderNumber, trackingNumber, skuID string) string {
 	orderKey := strings.TrimSpace(orderID)
 	if orderKey == "" {
 		orderKey = strings.TrimSpace(orderNumber)
 	}
-	trackingKey := strings.TrimSpace(trackingNumber)
-	if trackingKey == "" {
-		trackingKey = "no-track"
-	}
 	if orderKey == "" {
 		orderKey = "unknown-order"
 	}
-	return "kilimall_" + orderKey + "_" + trackingKey
+	trackKey := strings.TrimSpace(trackingNumber)
+	if trackKey == "" {
+		trackKey = "no-track"
+	}
+	skuKey := strings.TrimSpace(skuID)
+	if skuKey == "" {
+		skuKey = "no-sku"
+	}
+	return "kilimall_" + orderKey + "_" + trackKey + "_" + skuKey
 }
 
-func valueFromMap(m map[string]interface{}, keys ...string) interface{} {
-	for _, key := range keys {
-		if v, ok := m[key]; ok {
-			return v
+func pickLatestTime(order kilimallOrder) time.Time {
+	candidates := []string{
+		order.CompletedTime,
+		order.DeliveredTime,
+		order.ShippedTime,
+		order.ConfirmedTime,
+		order.PaidTime,
+		order.CreatedTime,
+	}
+	latest := time.Time{}
+	for _, raw := range candidates {
+		t := parseKilimallTime(raw)
+		if latest.IsZero() || t.After(latest) {
+			latest = t
 		}
 	}
-	return nil
-}
-
-func stringFromMap(m map[string]interface{}, keys ...string) string {
-	v := valueFromMap(m, keys...)
-	if v == nil {
-		return ""
-	}
-	switch val := v.(type) {
-	case string:
-		return strings.TrimSpace(val)
-	case float64:
-		if val == float64(int64(val)) {
-			return strconv.FormatInt(int64(val), 10)
-		}
-		return strings.TrimSpace(strconv.FormatFloat(val, 'f', -1, 64))
-	case int:
-		return strconv.Itoa(val)
-	case int64:
-		return strconv.FormatInt(val, 10)
-	case bool:
-		return strconv.FormatBool(val)
-	default:
-		return strings.TrimSpace(fmt.Sprintf("%v", val))
-	}
-}
-
-func intFromMap(m map[string]interface{}, keys ...string) int {
-	v := valueFromMap(m, keys...)
-	if v == nil {
-		return 0
-	}
-	switch val := v.(type) {
-	case float64:
-		return int(val)
-	case int:
-		return val
-	case int64:
-		return int(val)
-	case string:
-		n, _ := strconv.Atoi(strings.TrimSpace(val))
-		return n
-	default:
-		return 0
-	}
-}
-
-func parseKilimallTimeValue(v interface{}) time.Time {
-	if v == nil {
+	if latest.IsZero() {
 		return time.Now()
 	}
+	return latest
+}
 
-	switch val := v.(type) {
-	case float64:
-		return parseUnixMillis(int64(val))
-	case int64:
-		return parseUnixMillis(val)
-	case int:
-		return parseUnixMillis(int64(val))
-	case string:
-		raw := strings.TrimSpace(val)
-		if raw == "" {
-			return time.Now()
+func parseKilimallTime(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.EqualFold(raw, "null") {
+		return time.Time{}
+	}
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04:05.000Z",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t
 		}
-		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
-			return parseUnixMillis(n)
+	}
+	return time.Time{}
+}
+
+func mapRegionToCountry(regionCode string) string {
+	switch strings.ToUpper(strings.TrimSpace(regionCode)) {
+	case "KE":
+		return "Kenya"
+	case "NG":
+		return "Nigeria"
+	case "GH":
+		return "Ghana"
+	default:
+		return strings.ToUpper(strings.TrimSpace(regionCode))
+	}
+}
+
+func mapRegionToCurrency(regionCode string) string {
+	switch strings.ToUpper(strings.TrimSpace(regionCode)) {
+	case "KE":
+		return "KES"
+	case "NG":
+		return "NGN"
+	case "GH":
+		return "GHS"
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
 		}
-		layouts := []string{
-			time.RFC3339,
-			"2006-01-02 15:04:05",
-			"2006-01-02T15:04:05",
-			"2006-01-02T15:04:05.000Z",
-		}
-		for _, layout := range layouts {
-			if t, err := time.Parse(layout, raw); err == nil {
-				return t
-			}
+	}
+	return ""
+}
+
+func firstNonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
 		}
 	}
 	return time.Now()
-}
-
-func parseUnixMillis(ts int64) time.Time {
-	if ts <= 0 {
-		return time.Now()
-	}
-	if ts > 1e12 {
-		return time.UnixMilli(ts)
-	}
-	return time.Unix(ts, 0)
 }
