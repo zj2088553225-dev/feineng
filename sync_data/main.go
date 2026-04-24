@@ -39,9 +39,6 @@ func main() {
 	//cron_ser.SyncAllAccountsOrdersTrajectory()
 	//err = cron_ser.SyncONEOrderItems(global.Config.Jumia.AccessToken, []string{"365876217", "345716217", "327414417"})
 	cron_ser.SyncUserProductInventoryForone()
-	//if err != nil {
-	//	global.Log.Error(err.Error())
-	//}
 
 	// ✅ 阻塞，防止程序退出
 	select {}

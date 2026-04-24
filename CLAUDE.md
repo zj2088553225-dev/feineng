@@ -97,10 +97,16 @@ go test ./... -run TestName -count=1   # single test by name
 
 ## Important project-specific gotchas
 
-- `frontend/src/utils/request.js` currently points `baseURL` to production URL; localhost baseURL is commented out.
-- CORS in `backend/routers/enter.go` allows `http://localhost:5173` explicitly.
+- `frontend/src/utils/request.js` currently points `baseURL` to `http://localhost:8080/api` (local dev).
+- CORS in `backend/routers/enter.go` allows `http://localhost:5173` and any `chrome-extension://` origin.
 - `sync_data/main.go` currently executes `SyncUserProductInventoryForone()` and blocks; scheduled cron startup (`CronInit`) is present in code but commented out.
 - There are currently no committed `_test.go` files in this repository; `go test` commands are still the canonical way to run tests when tests are added.
 - Kilimall logistics crawler scaffold exists at `sync_data/service/cron_ser/sync_kilimall_logistics.go` and reads auth from `sync_data/settings.yaml` under `kilimall` (`cookie`, `auth_token`, `base_url`, `logistics_api`, `page_size`, `max_retries`, `delay_ms`).
 - Kilimall 401/403 is treated as auth expiry and updates `service_status` (id=13) to `错误`, so dashboard can prompt manual YAML credential refresh.
 - Current Kilimall sync writes normalized logistics fields into `models.OrderItem` (upsert by `id`); no `models.LogisticsRecord` type is currently present in repository.
+- Kilimall cost-sheet sync is in `sync_data/service/cron_ser/sync_kilimall_cost_sheets.go`; run with `go run . -kilimall-cost`. Pagination uses `pagination=N&skip=(N-1)*limit&limit=N` (not `page=`).
+- `models.Order` has `TotalShippingCost` and `NetProfit` fields (added 2026-04-24); `NetProfit = TotalAmountLocalValue - TotalShippingCost`, recalculated after each cost-sheet sync.
+- `POST /api/system/kilimall-cookie` updates `kilimall.cookie` and `kilimall.auth_token` in `settings.yaml` via YAML AST and resets `service_status(id=13)` to "正常". Protected by `LocalOnly()` middleware (127.0.0.1 only, no JWT required).
+- Chrome extension at `kilimall-token-grabber/` (Manifest V3) silently intercepts `accesstoken` header and `seller-sid` cookie from `*.kilimall.ke` requests and auto-POSTs to the above endpoint. Uses `chrome.storage.session` for dedup across Service Worker restarts.
+- `backend/middleware/local_only.go` provides `LocalOnly()` middleware restricting access to 127.0.0.1/::1 only.
+- `frontend/src/App.vue` polls `GET /api/service` every 30 seconds when Kilimall auth alert is visible; stops polling once alert clears.

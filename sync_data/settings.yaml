@@ -2,9 +2,9 @@ mysql:
     host: 127.0.0.1
     port: 3306
     config: ?charset=utf8mb4&parseTime=True&loc=Asia%2FShanghai
-    db: ycdb
-    user: wukong
-    password: ve5Z0JhgojuLH4ozB9xC
+    db: feineng
+    user: root
+    password: feineng_root_123
     log_level: dev
 system:
     host: 0.0.0.0
@@ -42,3 +42,20 @@ wuliu:
     token: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NjUyNjg0NDIsInVzZXJuYW1lIjoi5rmW5Y2X6IGa5pm66Leo5aKD55S15a2Q5ZWG5Yqh5pyJ6ZmQ5YWs5Y-4In0.XRW5zkbwEkgGS9mx2KPEWkOLdif3FAU90-qLtRd0mQ0
     token_two: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NjUyNjg0NzksInVzZXJuYW1lIjoi5rmW5Y2X5LqR6amw6Leo5aKD55S15a2Q5ZWG5Yqh5pyJ6ZmQ5YWs5Y-4In0.K0hx7eLfbiKX2OCNx-2hJAxK07SVu8VE-yPoohO1F8k
     token_three: eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJleHAiOjE3NjUyNjg1MTUsInVzZXJuYW1lIjoi5rmW5Y2X6IGa5pm66Leo5aKD55S15a2Q5ZWG5Yqh5pyJ6ZmQ5YWs5Y-46ZmI5b2w5q2mIn0.hBtj1f9Ks2VpVtbRgLN-8cs9XvMYpKyN5i0RlZ4GsVk
+kilimall:
+    cookie: "seller-sid=testvalue"
+    auth_token: "testtoken"
+    base_url: "https://seller-api.kilimall.ke"
+    logistics_api: "/order-list"
+    cost_sheet_api: "/logistics-head-account/cost-sheets"
+    cost_sheet_page_size: 50
+    region_id: 6
+    region_code: "KE"
+    order_status: 0
+    return_skus: 1
+    time_type: 1
+    start_time: ""
+    end_time: ""
+    page_size: 20
+    max_retries: 3
+    delay_ms: 1200

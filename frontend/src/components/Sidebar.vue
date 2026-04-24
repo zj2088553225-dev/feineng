@@ -88,6 +88,13 @@ const allMenuItems = [
     roles: ['admin', 'user']
   },
   {
+    key: 'logistics_list',
+    icon: InboxOutlined,
+    label: 'Kilimall物流',
+    path: '/logistics/list',
+    roles: ['admin', 'user']
+  },
+  {
     key: 'user_center',
     icon: UserOutlined,
     label: '合伙人中心',

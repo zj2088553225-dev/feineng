@@ -6,8 +6,8 @@ import (
 
 type ServiceStatus struct {
 	ID        uint      `gorm:"primaryKey"`
-	Service   string    // 服务名称，如 "jumia_order_sync"
-	Status    string    // 状态
-	Message   string    // 状态描述
-	UpdatedAt time.Time // GORM 会自动在更新时填充此字段
+	Service   string    `gorm:"type:varchar(100);uniqueIndex;not null;comment:服务名称"`
+	Status    string    `gorm:"type:varchar(20);default:'未知';comment:服务状态"`
+	Message   string    `gorm:"type:text;comment:状态描述"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime"`
 }

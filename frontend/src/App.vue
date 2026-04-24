@@ -1,14 +1,52 @@
 <!-- src/App.vue -->
 <template>
   <a-layout class="layout">
-    <!-- 传递 collapsed 状态给 Sidebar，并接收变化 -->
-    <Sidebar  v-if="!hideSidebar" v-model:collapsed="collapsed" />
+    <Sidebar v-if="!hideSidebar" v-model:collapsed="collapsed" />
 
-    <!-- 右侧内容：marginLeft 动态绑定 -->
     <a-layout :style="{ marginLeft: sidebarWidth }">
-
-
       <a-layout-content class="content">
+        <a-alert
+          v-if="showKilimallAuthAlert && !hideSidebar"
+          class="kilimall-alert"
+          type="error"
+          banner
+          message="Kilimall 授权已过期，请抓取最新 Seller-SID Cookie 和 AccessToken 后更新授权。"
+        >
+          <template #action>
+            <a-button size="small" type="primary" danger @click="openKilimallAuthModal">
+              更新 Kilimall 授权
+            </a-button>
+          </template>
+        </a-alert>
+
+        <a-modal
+          v-model:open="kilimallAuthModalVisible"
+          title="更新 Kilimall 授权"
+          ok-text="保存"
+          cancel-text="取消"
+          :confirm-loading="savingKilimallAuth"
+          @ok="saveKilimallAuth"
+        >
+          <a-form layout="vertical">
+            <a-form-item label="Kilimall Seller-SID (Cookie)">
+              <a-textarea
+                v-model:value="kilimallAuthForm.cookie"
+                :rows="4"
+                placeholder="请粘贴包含 seller-sid=... 的 Cookie"
+                allow-clear
+              />
+            </a-form-item>
+            <a-form-item label="Kilimall AccessToken">
+              <a-textarea
+                v-model:value="kilimallAuthForm.token"
+                :rows="4"
+                placeholder="请粘贴请求头 accesstoken 的值"
+                allow-clear
+              />
+            </a-form-item>
+          </a-form>
+        </a-modal>
+
         <router-view />
       </a-layout-content>
     </a-layout>
@@ -16,57 +54,121 @@
 </template>
 
 <script setup>
-import
-{ref, computed, onMounted} from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { message } from 'ant-design-vue'
+import { useRoute } from 'vue-router'
 import Sidebar from './components/Sidebar.vue'
-import {useRoute} from "vue-router";
-import {useStore} from "@/stores/userStore.js";
+import { useStore } from '@/stores/userStore.js'
+import request from '@/utils/request.js'
 
-// 当前路由
 const route = useRoute()
-
-// 控制侧边栏展开/折叠
 const collapsed = ref(false)
-
-// 判断当前页面是否隐藏侧边栏
-const hideSidebar = computed(() => {
-  return route.meta?.hideSidebar === true
+const showKilimallAuthAlert = ref(false)
+const kilimallAuthModalVisible = ref(false)
+const savingKilimallAuth = ref(false)
+const kilimallAuthForm = reactive({
+  cookie: '',
+  token: '',
 })
+const store = useStore()
 
-// 动态计算 marginLeft（仅当 Sidebar 显示时）
+const hideSidebar = computed(() => route.meta?.hideSidebar === true)
+
 const sidebarWidth = computed(() => {
   if (hideSidebar.value) return '0px'
   return collapsed.value ? '80px' : '256px'
 })
-const store = useStore()
 
-onMounted(() => {
-  // 页面加载时尝试恢复登录状态
+const fetchServiceStatus = async () => {
+  if (hideSidebar.value || store.userInfo?.role !== 'admin') {
+    showKilimallAuthAlert.value = false
+    return
+  }
+
+  try {
+    const res = await request.get('/service')
+    if (res.data.code !== 200 || !Array.isArray(res.data.data)) {
+      showKilimallAuthAlert.value = false
+      return
+    }
+
+    const kilimallStatus = res.data.data.find((item) => item?.ID === 13)
+    const statusText = String(kilimallStatus?.Status || '').trim().toLowerCase()
+    showKilimallAuthAlert.value = statusText === '错误' || statusText === 'error'
+  } catch (error) {
+    showKilimallAuthAlert.value = false
+    console.error(error)
+  }
+}
+
+const openKilimallAuthModal = () => {
+  kilimallAuthForm.cookie = ''
+  kilimallAuthForm.token = ''
+  kilimallAuthModalVisible.value = true
+}
+
+const saveKilimallAuth = async () => {
+  const cookie = kilimallAuthForm.cookie.trim()
+  const token = kilimallAuthForm.token.trim()
+  if (!cookie || !token) {
+    message.warning('请填写 Kilimall Seller-SID Cookie 和 AccessToken')
+    return
+  }
+
+  savingKilimallAuth.value = true
+  try {
+    const res = await request.post('/system/kilimall-cookie', { cookie, token })
+    if (res.data.code !== 200) {
+      message.error(res.data.msg || '更新失败')
+      return
+    }
+
+    message.success('更新成功')
+    kilimallAuthModalVisible.value = false
+    showKilimallAuthAlert.value = false
+    await fetchServiceStatus()
+  } catch (error) {
+    message.error('更新失败，请检查网络')
+    console.error(error)
+  } finally {
+    savingKilimallAuth.value = false
+  }
+}
+
+let pollTimer = null
+
+onMounted(async () => {
   store.loadUserInfo()
+  await fetchServiceStatus()
+  pollTimer = setInterval(async () => {
+    await fetchServiceStatus()
+    if (!showKilimallAuthAlert.value) clearInterval(pollTimer)
+  }, 30000)
 })
+
+onUnmounted(() => {
+  clearInterval(pollTimer)
+})
+
+watch(
+  () => route.fullPath,
+  async () => {
+    await fetchServiceStatus()
+  }
+)
 </script>
 
 <style scoped>
 .layout {
   min-height: 100vh;
 }
-/*
-.header {
-  background: #fff;
-  padding: 0 24px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  box-shadow: 0 1px 4px rgba(0, 21, 41, 0.08);
-  position: relative;
-  z-index: 998;
-}
-*/
-
 
 .content {
-  background: #F5F5F5;
+  background: #f5f5f5;
   overflow: auto;
 }
 
+.kilimall-alert {
+  margin: 16px 16px 0;
+}
 </style>

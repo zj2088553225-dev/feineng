@@ -18,10 +18,12 @@ type Order struct {
 	UpdatedAt                time.Time `json:"updatedAt"`
 
 	// 嵌套字段展开
-	TotalAmountCurrency      string  `gorm:"column:total_amount_currency"`
-	TotalAmountValue         float64 `gorm:"column:total_amount_value"`
-	TotalAmountLocalCurrency string  `gorm:"column:total_amount_local_currency"`
-	TotalAmountLocalValue    float64 `gorm:"column:total_amount_local_value"`
+	TotalAmountCurrency      string  `gorm:"column:total_amount_currency" json:"totalAmountCurrency"`
+	TotalAmountValue         float64 `gorm:"column:total_amount_value" json:"totalAmountValue"`
+	TotalAmountLocalCurrency string  `gorm:"column:total_amount_local_currency" json:"totalAmountLocalCurrency"`
+	TotalAmountLocalValue    float64 `gorm:"column:total_amount_local_value" json:"totalAmountLocalValue"`
+	TotalShippingCost        float64 `gorm:"column:total_shipping_cost" json:"totalShippingCost"`
+	NetProfit                float64 `gorm:"column:net_profit" json:"netProfit"`
 
 	CountryCode     string `gorm:"column:country_code"`
 	CountryName     string `gorm:"column:country_name"`

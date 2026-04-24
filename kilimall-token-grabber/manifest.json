@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Kilimall Token Grabber",
+  "version": "1.0",
+  "permissions": ["webRequest", "storage", "sessions"],
+  "host_permissions": [
+    "*://*.kilimall.ke/*",
+    "http://127.0.0.1:8080/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

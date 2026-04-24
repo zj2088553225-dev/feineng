@@ -16,6 +16,12 @@ const router = createRouter({
       component: () => import('../view/home.vue')
     },
     {
+      path: '/logistics/list',
+      name: 'logistics_list',
+      component: () => import('../view/logisticsList.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/user_center',
       name: 'user_center',
       redirect: '/user_center/my_product',

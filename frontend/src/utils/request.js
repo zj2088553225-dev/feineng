@@ -8,9 +8,14 @@ import { useStore } from '@/stores/userStore.js' // 确保路径正确
 //     timeout: 100000, // 请求超时时间（毫秒）
 // })
 // 生产环境
+// const request = axios.create({
+//     baseURL: 'https://hunanyunchi.com/api',
+//     timeout: 5000000,
+// })
+// 本地开发
 const request = axios.create({
-    baseURL: 'https://hunanyunchi.com/api', // 请根据实际后端地址修改
-    timeout: 5000000, // 请求超时时间（毫秒）
+    baseURL: 'http://localhost:8080/api',
+    timeout: 100000,
 })
 // http://yunchi.wukong.wales/login
 
